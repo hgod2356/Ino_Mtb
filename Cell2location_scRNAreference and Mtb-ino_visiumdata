@@ -1,0 +1,146 @@
+## Data Preprocessing (Shell)
+# Rename FASTQ files to Cell Ranger format
+for f in SRR*1.fastq.gz; do cp "$f" "${f%1.fastq.gz}S1_L001_R1_001.fastq.gz"; done
+for f in SRR*2.fastq.gz; do cp "$f" "${f%2.fastq.gz}S1_L001_R2_001.fastq.gz"; done
+
+# Run Cell Ranger Count for multiple samples
+# 1. P3_P7_1 
+cellranger count --id=P3_P7_1 --transcriptome=refdata-gex-GRCm39-2024-A --fastqs=GSE151974 --sample=SRR11945638,SRR11945639,SRR11945640,SRR11945641,SRR11945642,SRR11945643,SRR11945644,SRR11945645,SRR11945646 --create-bam=false --r1-length=26 --localcores=8 --localmem=32
+
+# 2. P3_P7_2
+cellranger count --id=P3_P7_2 --transcriptome=refdata-gex-GRCm39-2024-A --fastqs=GSE151974 --sample=SRR11945647,SRR11945648,SRR11945649,SRR11945650,SRR11945651,SRR11945652,SRR11945653,SRR11945654,SRR11945655 --create-bam=false --r1-length=26 --localcores=8 --localmem=32
+
+# 3. P3_2 
+cellranger count --id=P3_2 --transcriptome=refdata-gex-GRCm39-2024-A --fastqs=GSE151974 --sample=SRR11945656,SRR11945657,SRR11945658,SRR11945659,SRR11945660,SRR11945661,SRR11945662,SRR11945663,SRR11945664 --create-bam=false --r1-length=26 --localcores=8 --localmem=32
+
+# 4. P7_1 
+cellranger count --id=P7_1 --transcriptome=refdata-gex-GRCm39-2024-A --fastqs=GSE151974 --sample=SRR11945665,SRR11945666,SRR11945667,SRR11945668,SRR11945669 --create-bam=false --r1-length=26 --localcores=8 --localmem=32
+
+# 5. P14_1 
+cellranger count --id=P14_1 --transcriptome=refdata-gex-GRCm39-2024-A --fastqs=GSE151974 --sample=SRR11945670,SRR11945671,SRR11945672,SRR11945673,SRR11945674,SRR11945675,SRR11945676,SRR11945677,SRR11945678 --create-bam=false --r1-length=26 --localcores=8 --localmem=32
+
+# 6. P14_2 
+cellranger count --id=P14_2 --transcriptome=refdata-gex-GRCm39-2024-A --fastqs=GSE151974 --sample=SRR11945679,SRR11945680,SRR11945681,SRR11945682,SRR11945683,SRR11945684,SRR11945685,SRR11945686,SRR11945687 --create-bam=false --r1-length=26 --localcores=8 --localmem=32
+
+## after producing h5ad in R
+import scanpy as sc
+import pandas as pd
+import numpy as np
+import cell2location
+import scvi
+import matplotlib.pyplot as plt
+from cell2location.models import RegressionModel
+
+# 1. Load reference scRNA-seq data
+adata = sc.read_h5ad("Lung_Reference_Final.h5ad")
+adata.X = adata.X.tocsr()
+
+# 2. Setup AnnData for Regression Model
+# labels_key: Cell type annotations; batch_key: Sample identifier
+cell2location.models.RegressionModel.setup_anndata(
+    adata=adata,
+    labels_key='CellType',
+    batch_key='orig.ident'
+)
+
+# 3. Initialize and train the model
+mod = RegressionModel(adata)
+mod.train(
+    max_epochs=250, 
+    batch_size=2500,
+    accelerator='gpu', 
+    devices=1
+)
+
+# 4. Export posterior and save signatures
+mod.plot_history(20)
+plt.show()
+
+adata = mod.export_posterior(
+    adata, 
+    sample_kwargs={'num_samples': 1000, 'batch_size': 2500}
+)
+
+# Extract mean expression per cluster
+if 'means_per_cluster_mu_fg' in adata.varm.keys():
+    inf_aver = adata.varm['means_per_cluster_mu_fg'][[
+        f'means_per_cluster_mu_fg_{i}' for i in adata.uns['mod']['factor_names']
+    ]]
+    inf_aver.columns = adata.uns['mod']['factor_names']
+
+# 7. results save
+inf_aver.to_csv("GSE151974_reference_signatures.csv")
+mod.save("GSE151974_reference_model", overwrite=True)
+
+print("--- Reference Training Completed Successfully ---")
+
+##Visium AnnData Preparation
+# MTB, MTB+Cs visium data exported from R into an h5ad
+import scanpy as sc
+import pandas as pd
+import anndata
+from scipy import io
+
+# 1. Load components exported from Seurat
+X_vis = io.mmread("vis_counts.mtx").T.tocsr()
+obs_vis = pd.read_csv("vis_metadata.csv", index_col=0)
+var_vis = pd.read_csv("vis_genes.csv", index_col=0)
+
+# 2. Assemble AnnData object
+adata_vis = anndata.AnnData(X=X_vis, obs=obs_vis, var=var_vis)
+adata_vis.var_names_make_unique()
+adata_vis.write_h5ad("MDR_combined_final.h5ad")
+
+print("MDR_combined_final.h5ad saving complete!")
+
+## Spatial Deconvolution
+#Perform deconvolution by mapping the reference signatures onto the Visium spatial data
+import scanpy as sc
+import pandas as pd
+import numpy as np
+import cell2location
+import torch
+import matplotlib.pyplot as plt
+
+# Optimize for NVIDIA Tensor Cores
+torch.set_float32_matmul_precision('high')
+
+# 1. Load data and synchronize genes
+adata_vis = sc.read_h5ad("MDR_combined_final.h5ad")
+inf_aver = pd.read_csv("GSE151974_reference_signatures.csv", index_col=0)
+inf_aver.columns = [c.replace('means_per_cluster_mu_fg_', '') for c in inf_aver.columns]
+
+intersect = [g for g in inf_aver.index if g in adata_vis.var_names]
+adata_vis = adata_vis[:, intersect].copy()
+inf_aver = inf_aver.loc[intersect, :].copy()
+
+# 2. Setup and train Cell2location model
+cell2location.models.Cell2location.setup_anndata(
+    adata=adata_vis,
+    batch_key="orig.ident" # sample batch (MDR_Con, MDR_Cs)
+)
+
+mod_vis = cell2location.models.Cell2location(
+    adata_vis, 
+    cell_state_df=inf_aver
+)
+
+mod_vis.train(
+    max_epochs=30000, 
+    batch_size=None, 
+    accelerator='gpu'
+)
+
+mod_vis.plot_history(1000)
+plt.show()
+
+# 3. Export results (q05 abundance)
+adata_vis = mod_vis.export_posterior(
+    adata_vis, 
+    sample_kwargs={'num_samples': 1000, 'batch_size': 2500}
+)
+
+cell_abundance = adata_vis.obsm['q05_cell_abundance_w_sf']
+cell_abundance.columns = [c.replace('q05cell_abundance_w_sf_', '') for c in cell_abundance.columns]
+
+cell_abundance.to_csv("cell2location_MDR_results.csv")
