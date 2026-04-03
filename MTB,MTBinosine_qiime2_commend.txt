@@ -1,0 +1,107 @@
+# Qiime2 conda env activation
+conda activate qiime2-2022.8
+
+#rescript 
+https://github.com/anweshmaile/silva-138_classifiers
+https://forum.qiime2.org/t/processing-filtering-and-evaluating-the-silva-database-and-other-reference-sequence-data-with-rescript/15494
+https://forum.qiime2.org/t/processing-filtering-and-evaluating-the-silva-database-and-other-reference-sequence-data-with-rescript/15494#heading--TOC
+qiime rescript get-silva-data \
+    --p-version '138.1' \
+    --p-target 'SSURef_NR99' \
+    --o-silva-sequences silva-138.1-ssu-nr99-rna-seqs.qza \
+    --o-silva-taxonomy silva-138.1-ssu-nr99-tax.qza
+	
+qiime rescript cull-seqs \
+    --i-sequences silva-138.1-ssu-nr99-rna-seqs.qza \
+    --o-clean-sequences silva-138.1-ssu-nr99-seqs-cleaned.qza
+	
+qiime rescript filter-seqs-length-by-taxon \
+    --i-sequences silva-138.1-ssu-nr99-seqs-cleaned.qza \
+    --i-taxonomy silva-138.1-ssu-nr99-tax.qza \
+    --p-labels Archaea Bacteria Eukaryota \
+    --p-min-lens 900 1200 1400 \
+    --o-filtered-seqs silva-138.1-ssu-nr99-seqs-filt.qza \
+    --o-discarded-seqs silva-138.1-ssu-nr99-seqs-discard.qza
+	
+qiime rescript dereplicate \
+    --i-sequences silva-138.1-ssu-nr99-seqs-filt.qza  \
+    --i-taxa silva-138.1-ssu-nr99-tax.qza \
+    --p-mode 'uniq' \
+    --o-dereplicated-sequences silva-138.1-ssu-nr99-seqs-derep-uniq.qza \
+    --o-dereplicated-taxa silva-138.1-ssu-nr99-tax-derep-uniq.qza
+
+qiime feature-classifier extract-reads --i-sequences silva-138.1-ssu-nr99-seqs-derep-uniq.qza --p-f-primer CCTACGGGNGGCWGCAG --p-r-primer GACTACHVGGGTATCTAATCC --p-read-orientation 'forward' --p-n-jobs 3 --o-reads silva-138.1-ssu-nr99-seqs-341f-805r.qza
+
+#importing data 
+qiime tools import --type 'SampleData[PairedEndSequencesWithQuality]' --input-path Inosine_manifest.txt --output-path 1.inosine--paired-end-demux.qza --input-format PairedEndFastqManifestPhred33V2
+
+#cutadapt
+qiime cutadapt trim-paired --i-demultiplexed-sequences 1.inosine--paired-end-demux.qza --p-front-f CCTACGGGNGGCWGCAG --p-front-r GACTACHVGGGTATCTAATCC --p-error-rate 0 --o-trimmed-sequences 1.inosine-paired-end-demux_trimmed.qza --p-cores 120
+
+#bowtie2 - index build
+qiime tools import --input-path Mus_musculus.GRCm39.dna_rm.primary_assembly.fasta --output-path Mus_musculus_genome.qza --type 'FeatureData[Sequence]'
+
+qiime quality-control bowtie2-build --i-sequences Mus_musculus_genome.qza --p-n-threads 100 --o-database Mus_musculus_index
+
+#bowtie2 - filtering
+qiime quality-control filter-reads --i-demultiplexed-sequences 1.inosine-paired-end-demux_trimmed.qza --i-database Mus_musculus_index_GRCm39.qza --p-n-threads 100 --o-filtered-sequences 1.inosine-paired-end-demux_trimmed_bowtie.qza
+
+#Demultiplexing sequences summary (qza->qzv)
+qiime demux summarize --i-data 1.inosine-paired-end-demux_trimmed_bowtie.qza --o-visualization 1.inosine-paired-end-demux_trimmed_bowtie.qzv
+
+# Sequence quality control and feature table construction (n=24, 675.8mb, 1 hour)
+qiime dada2 denoise-paired --i-demultiplexed-seqs 1.inosine-paired-end-demux_trimmed_bowtie.qza --p-trim-left-f 0 --p-trim-left-r 0 --p-trunc-len-f 255 --p-trunc-len-r 181 --o-table 2.inosine-table_0f255_0r181.qza --o-representative-sequences 2.inosine-rep-seqs_0f255_0r181.qza --o-denoising-stats 2.inosine-denoising-stats_0f255_0r181.qza --p-n-threads 100
+
+#File format conversion (qza to qzv)
+qiime metadata tabulate --m-input-file 2.inosine-denoising-stats_0f255_0r181.qza --o-visualization 2.inosine-denoising-stats_0f255_0r181.qzv
+
+#FeatureTable and FeatureData summaries
+qiime feature-table summarize --i-table 2.inosine-table_0f255_0r181.qza --o-visualization 2.inosine-table_0f255_0r181.qzv --m-sample-metadata-file Inosine_metadata.txt
+
+#inosine-fecal, cecal 나눔
+qiime feature-table filter-samples --i-table 2.inosine-table_0f255_0r181.qza --m-metadata-file Inosine_metadata.txt --p-where "[target]='Cecum'" --o-filtered-table 2-2-1.inosine_cecum_table_0f255_0r181.qza
+
+qiime feature-table filter-samples --i-table 2.inosine-table_0f255_0r181.qza --m-metadata-file Inosine_metadata.txt --p-where "[target]='Feces'" --o-filtered-table 2-2-2.inosine_feces_table_0f255_0r181.qza
+
+qiime feature-table summarize --i-table 2-2-1.inosine_cecum_table_0f255_0r181.qza --o-visualization 2-2-1.inosine_cecum_table_0f255_0r181.qzv
+
+qiime feature-table summarize --i-table 2-2-1.inosine_cecum_table_0f255_0r181.qza --o-visualization 2-2-1.inosine_cecum_table_0f255_0r181.qzv
+
+qiime feature-table filter-seqs --i-data 2.inosine-rep-seqs_0f255_0r181.qza --i-table 2-2-1.inosine_cecum_table_0f255_0r181.qza --o-filtered-data 2-2-1.inosine_cecum-repseq_0f255_0r181.qza
+
+qiime feature-table filter-seqs --i-data 2.inosine-rep-seqs_0f255_0r181.qza --i-table 2-2-2.inosine_feces_table_0f255_0r181.qza --o-filtered-data 2-2-2.inosine_feces-repseq_0f255_0r181.qza
+
+#<Amplicon denoising> 
+qiime feature-table filter-features --i-table 2-2-1.inosine_cecum_table_0f255_0r181.qza --p-min-frequency 15 --p-min-samples 3 --o-filtered-table 3-1.inosine_cecum-table_0f255_0r181_minfreq15_minsam3.qza
+
+qiime feature-table filter-features --i-table 2-2-2.inosine_feces_table_0f255_0r181.qza --p-min-frequency 15 --p-min-samples 3 --o-filtered-table 3-2.inosine_feces-table_0f255_0r181_minfreq15_minsam3.qza
+
+qiime feature-table summarize --i-table 3-1.inosine_cecum-table_0f255_0r181_minfreq15_minsam3.qza --o-visualization 3-1.inosine_cecum-table_0f255_0r181_minfreq15_minsam3.qzv
+
+qiime feature-table summarize --i-table 3-2.inosine_feces-table_0f255_0r181_minfreq15_minsam3.qza --o-visualization 3-2.inosine_feces-table_0f255_0r181_minfreq15_minsam3.qzv
+
+# Generate a tree for phylogenetic diversity analyses 
+qiime phylogeny align-to-tree-mafft-fasttree --i-sequences 2-2-1.inosine_cecum-repseq_0f255_0r181.qza --o-alignment 5-2-1.inosine_cecum_aligned.qza --o-masked-alignment 5-2-1.inosine_cecum_masked_aligned.qza --o-tree 5-2-1.inosine_cecum_unrooted_tree.qza --o-rooted-tree 5-2-1.inosine_cecum_rooted_tree.qza --p-n-threads 120
+
+qiime phylogeny align-to-tree-mafft-fasttree --i-sequences 2-2-2.inosine_feces-repseq_0f255_0r181.qza --o-alignment 5-2-2.inosine_feces_aligned.qza --o-masked-alignment 5-2-2.inosine_feces_masked_aligned.qza --o-tree 5-2-2.inosine_feces_unrooted_tree.qza --o-rooted-tree 5-2-2.inosine_feces_rooted_tree.qza --p-n-threads 120
+
+#Applies a collection of diversity metrics to a feature table.
+qiime diversity core-metrics-phylogenetic --i-phylogeny 5-2-1.inosine_cecum_rooted_tree.qza --i-table 3-1.inosine_cecum-table_0f255_0r181_minfreq15_minsam3.qza --p-sampling-depth 27734 --m-metadata-file Inosine_metadata.txt --output-dir core-metrics-results_inosine_cecum_subsampled_27734/ --p-n-jobs-or-threads 120
+
+qiime diversity core-metrics-phylogenetic --i-phylogeny 5-2-2.inosine_feces_rooted_tree.qza --i-table 3-2.inosine_feces-table_0f255_0r181_minfreq15_minsam3.qza --p-sampling-depth 28696 --m-metadata-file Inosine_metadata.txt --output-dir core-metrics-results_inosine_feces_subsampled_28696/ --p-n-jobs-or-threads 120
+
+#compares categories
+qiime diversity beta-group-significance --i-distance-matrix core-metrics-results_inosine_cecum_subsampled_27734/weighted_unifrac_distance_matrix.qza --m-metadata-file Inosine_metadata.txt --m-metadata-column 4group --p-method permanova --p-permutations 10000 --o-visualization core-metrics-results_inosine_cecum_subsampled_27734/permanova_weighted_4group.qzv
+
+qiime diversity beta-group-significance --i-distance-matrix core-metrics-results_inosine_cecum_subsampled_27734/unweighted_unifrac_distance_matrix.qza --m-metadata-file Inosine_metadata.txt --m-metadata-column 4group --p-method permanova --p-permutations 10000 --o-visualization core-metrics-results_inosine_cecum_subsampled_27734/permanova_unweighted_4group.qzv
+
+# taxonomic classification
+qiime feature-classifier classify-sklearn --i-reads 2.inosine-rep-seqs_0f255_0r181.qza --i-classifier SILVA_138_341_805_classifer.qza --o-classification 6.inosine_taxonomy.qza --p-n-jobs 30
+
+#File format conversion
+qiime metadata tabulate --m-input-file 6.inosine_taxonomy.qzaa --o-visualization 6.inosine_taxonomy.qzv
+
+#File format ->  ASV table
+qiime metadata tabulate --m-input-file 3-1.inosine_cecum-table_0f255_0r181_minfreq15_minsam3.qza --o-visualization 8.inosine_cecum_ASVtable_0f255_0r181_minfreq15_minsam3.qzv
+
+qiime metadata tabulate --m-input-file 3-2.inosine_feces-table_0f255_0r181_minfreq15_minsam3.qza --o-visualization 8.inosine_feces_ASVtable_0f255_0r181_minfreq15_minsam3.qzv
