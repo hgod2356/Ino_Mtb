@@ -1,0 +1,96 @@
+##########################################
+#mkdir -p logs qc/fastp trimmed salmon ref report
+#snakemake --use-conda --snakefile Snakefile_20260424_fastp.txt --cores 10 --default-resources mem_mb=10240 --latency-wait 30
+#--rerun-incomplete
+#snakemake --use-conda --snakefile Snakefile_20260424_fastp.txt -n
+##########################################
+
+import glob
+import os
+
+##########################################
+# 1. 샘플 리스트 자동 생성
+##########################################
+# raw 폴더에서 _1.fastq.gz로 끝나는 파일들을 찾아 샘플명을 추출합니다.
+RAW_FILES = glob.glob("raw/*_1.fastq.gz")
+SAMPLES = [os.path.basename(f).replace("_1.fastq.gz", "") for f in RAW_FILES]
+
+READS = ["1", "2"]
+
+# reference transcriptome
+TRANSCRIPTOME_FA = "ref/Mus_musculus.GRCm39.cdna.all.fa.gz"
+
+##########################################
+# Workflow target
+##########################################
+
+rule all:
+    input:
+        # 1. fastp 트리밍 결과 (Salmon의 입력이 됨)
+        expand("trimmed/{sample}_{read}.fastq.gz", sample=SAMPLES, read=READS),
+        
+        # 2. fastp 리포트
+        expand("qc/fastp/{sample}.html", sample=SAMPLES),
+        
+        # 3. 최종 Salmon 결과물
+        expand("salmon/{sample}/quant.sf", sample=SAMPLES)
+
+##########################################
+# fastp (Trimming + QC + Merging)
+##########################################
+rule fastp_pe:
+    input:
+        # 파일이 raw 폴더에 있다는 가정하에,
+        sample=["raw/{sample}_1.fastq.gz", "raw/{sample}_2.fastq.gz"]
+    output:
+        trimmed=["trimmed/{sample}_1.fastq.gz", "trimmed/{sample}_2.fastq.gz"],
+        unpaired1="trimmed/{sample}.u1.fastq.gz",
+        unpaired2="trimmed/{sample}.u2.fastq.gz",
+        failed="trimmed/{sample}.failed.fastq.gz",
+        html="qc/fastp/{sample}.html",
+        json="qc/fastp/{sample}.json"
+    log:
+        "logs/fastp/{sample}.log"
+    params:
+        # Illumina TruSeq Adapter read 1,2
+        adapters="",
+        extra="--detect_adapter_for_pe --trim_poly_g"
+    threads: 4 
+    wrapper:
+        "v9.5.0/bio/fastp"
+
+##########################################
+# Salmon index
+##########################################
+
+rule salmon_index:
+    input:
+        sequences = TRANSCRIPTOME_FA
+    output:
+        index = directory("salmon/transcriptome_index")
+    log:
+        "logs/salmon/transcriptome_index.log"
+    threads: 10
+    wrapper:
+        "v3.5.3/bio/salmon/index"
+
+##########################################
+# Salmon quant
+##########################################
+
+rule salmon_quant_reads:
+    input:
+        r1 = "trimmed/{sample}_1.fastq.gz",
+        r2 = "trimmed/{sample}_2.fastq.gz",
+        index = rules.salmon_index.output.index
+    output:
+        quant = "salmon/{sample}/quant.sf",
+        lib = "salmon/{sample}/lib_format_counts.json"
+    log:
+        "logs/salmon/{sample}.log"
+    params:
+        libtype = "A",
+        extra = ""
+    threads: 10
+    wrapper:
+        "v9.4.0/bio/salmon/quant"
