@@ -1,0 +1,53 @@
+#conda envrionment
+mamba install -c bioconda -c conda-forge fastp multiqc bwa samtools bcftools picard subread -y
+
+#FastP trimmin
+mkdir -p Trimmed Reports
+
+# 2. Raw folder - _1.fastq.gz file loop
+for r1 in Raw/*_1.fastq.gz; do
+    filename=$(basename "$r1")
+    prefix=${filename%_1.fastq.gz}
+    r2="Raw/${prefix}_2.fastq.gz"
+    echo "------------------------------------------"
+    echo "Processing Sample: ${prefix}"
+    echo "Input R1: $r1"
+    echo "Input R2: $r2"
+    fastp -i "$r1" -I "$r2" \
+          -o "Trimmed/${prefix}_trimmed_1.fastq.gz" -O "Trimmed/${prefix}_trimmed_2.fastq.gz" \
+          -h "Reports/${prefix}_report.html" -j "Reports/${prefix}_report.json" \
+          --detect_adapter_for_pe --trim_poly_g --thread 8
+done
+
+# multiQC report creation
+multiqc Reports/ -o MultiQC_Result/
+
+# STAR analysis
+# STAR index creation
+STAR --runMode genomeGenerate \
+     --genomeDir STAR_Index \
+     --genomeFastaFiles Reference/Mycobacterium_tuberculosis_H37Rv_genome_v5.fasta \
+     --sjdbGTFfile Reference/GCF_000195955.2_ASM19595v2_genomic.gtf \
+     --sjdbGTFtagExonParentTranscript transcript_id \
+     --sjdbGTFfeatureExon CDS \
+     --genomeSAindexNbases 9 \
+     --runThreadN 8
+
+# STAR alignment
+for r1 in Trimmed/*_trimmed_1.fastq.gz; do
+    prefix=$(basename "$r1" _trimmed_1.fastq.gz)
+    r2="Trimmed/${prefix}_trimmed_2.fastq.gz"
+    
+    echo "------------------------------------------"
+    echo "STAR Mapping with Memory Fix: ${prefix}"
+
+    STAR --runThreadN 8 \
+         --genomeDir STAR_Index \
+         --readFilesIn "$r1" "$r2" \
+         --readFilesCommand zcat \
+         --outFileNamePrefix "Aligned_STAR/${prefix}_" \
+         --outSAMtype BAM SortedByCoordinate \
+         --alignIntronMax 1 \
+         --quantMode GeneCounts \
+         --limitBAMsortRAM 2000000000  # 2GB
+done
