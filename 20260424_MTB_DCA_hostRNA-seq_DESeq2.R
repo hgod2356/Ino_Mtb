@@ -73,7 +73,7 @@ deseqresult <- DESeq(dds)
 deseqresult
 
 #condition1 Mtb vs Mtb_DCA
-res01 <- results(deseqresult, contrast = c("condition","Mtb","Mtb_DCA"), alpha = 0.05)
+res01 <- results(deseqresult, contrast = c("condition","Mtb_DCA","Mtb"), alpha = 0.05)
 res01
 summary(res01)
 plotMA(res01, ylim=c(-10,10))
@@ -190,6 +190,12 @@ ntd <- normTransform(deseqresult)
 head(assay(vsd), 3)
 head(assay(rld), 3)
 head(assay(ntd), 3)
+
+matched_symbols <- u.gene.DF$aa2.gene_name[match(rownames(vsd), u.gene.DF$aa2.gene_id)]
+matched_symbols[is.na(matched_symbols)] <- rownames(vsd)[is.na(matched_symbols)]
+final_names <- make.unique(matched_symbols)
+rownames(vsd) <- final_names
+head(rownames(vsd))
 
 #ggplot - PCA
 vsdpcaData <- plotPCA(vsd, intgroup = "condition", returnData = TRUE)
@@ -343,6 +349,8 @@ ggplot(plot_data, aes(x = Description)) +
     axis.title.x.top = element_text(color = "black", face = "bold")
   )
 
+#write.csv(plot_data, "Lipid_Metabolism_Barplot_Data.csv", row.names = FALSE)
+
 # Inflammation related pathways
 immune_target_pathways <- c(
   "leukocyte homeostasis",
@@ -377,6 +385,10 @@ p_immune <- dotplot(ck_go, showCategory = immune_target_pathways) +
 
 p_immune
 
+immune_dotplot_data <- ck_go@compareClusterResult %>%
+  filter(Description %in% immune_target_pathways)
+head(immune_dotplot_data)
+#write.csv(immune_dotplot_data, "Inflammation_related_pathways_dotplot_raw.csv", row.names = FALSE)
 
 # heatmap------------
 library(ComplexHeatmap)
@@ -395,12 +407,6 @@ target_pathways <- c(
   "foam cell differentiation",
   "lipid oxidation"
 )
-
-matched_symbols <- u.gene.DF$aa2.gene_name[match(rownames(vsd), u.gene.DF$aa2.gene_id)]
-matched_symbols[is.na(matched_symbols)] <- rownames(vsd)[is.na(matched_symbols)]
-final_names <- make.unique(matched_symbols)
-rownames(vsd) <- final_names
-head(rownames(vsd))
 
 ck_go_df <- as.data.frame(ck_go)
 target_pathway_data <- ck_go_df[ck_go_df$Description %in% target_pathways, ]
@@ -422,47 +428,51 @@ mat_scaled_horiz <- t(mat_scaled)
 
 gene_anno_mat_ordered <- gene_anno_mat[colnames(mat_scaled_horiz), , drop=FALSE]
 
-cat("히트맵 열 개수:", ncol(mat_scaled_horiz), "\n")
-cat("주석 데이터 행 개수:", nrow(gene_anno_mat_ordered), "\n")
-
-if(ncol(mat_scaled_horiz) != nrow(gene_anno_mat_ordered)) {
-  stop("유전자 개수와 주석 데이터의 개수가 일치하지 않습니다!")
+anno_colors_vector <- brewer.pal(min(12, length(target_pathways)), "Set3")
+anno_col_list <- list()
+for(i in seq_along(target_pathways)) {
+  pw <- target_pathways[i]
+  anno_col_list[[pw]] <- c("0" = "white", "1" = anno_colors_vector[i])
 }
 
-bottom_ha_go = columnAnnotation(
-  df = as.data.frame(gene_anno_mat_ordered), 
+bottom_ha_desc = columnAnnotation(
+  df = as.data.frame(gene_anno_mat_ordered),
   col = anno_col_list,
   show_annotation_name = TRUE,
-  annotation_name_gp = gpar(fontsize = 7),
-  annotation_name_rot = 0,
+  annotation_name_gp = gpar(fontsize = 8), 
+  annotation_name_rot = 0,              
   annotation_name_side = "right",
   show_legend = FALSE,
   simple_anno_size = unit(3, "mm")
 )
 
+col_ann_df <- as.data.frame(colData(vsd)[, "condition", drop=FALSE])
 row_ha_samples = rowAnnotation(
   condition = col_ann_df$condition,
   col = list(condition = c("Mtb" = "#E63943", "Mtb_DCA" = "#2A9D8F")),
   show_annotation_name = FALSE
 )
 
+new_sample_names <- c("MTB_1", "MTB_2", "MTB_3", "MTB+DCA_1", "MTB+DCA_2", "MTB+DCA_3")
+
 hp_horiz <- Heatmap(mat_scaled_horiz, 
                     name = "Z-score", 
                     col = colorRampPalette(c("navy", "white", "firebrick3"))(50),
+                    column_title = "Lipid accumulation & Foam cell associated gene",
                     row_labels = new_sample_names,
                     left_annotation = row_ha_samples, 
-                    bottom_annotation = bottom_ha_go,
+                    bottom_annotation = bottom_ha_desc,
                     show_column_names = TRUE, 
-                    column_names_gp = gpar(fontsize = 7), 
+                    column_names_gp = gpar(fontsize = 8), 
                     row_names_gp = gpar(fontsize = 10, face = "bold"),
+                    column_names_rot = 45,
                     cluster_rows = TRUE, 
                     cluster_columns = TRUE,
-                    column_names_rot = 90,
                     row_dend_side = "left",
-                    column_dend_side = "top",
-                    column_title = "Lipid accumulation & Foam cell associated gene")
+                    column_dend_side = "top")
 
 draw(hp_horiz, merge_legend = TRUE)
+
 
 #lipid accumulation, foam cell differentiation gene volcano plot
 library(dplyr)
